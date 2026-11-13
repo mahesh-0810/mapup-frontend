@@ -1,23 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { MapContainer, TileLayer, Polygon, Popup, Marker } from "react-leaflet";
+import { MapContainer, TileLayer, Polygon, Popup, Marker, useMapEvents } from "react-leaflet";
 import L from "leaflet";
+import { Geofence } from "../lib/api";
 
 // 1. Fix the famous Next.js + Leaflet missing icon bug using Leaflet's CDN
-delete (L.Icon.Default.prototype as any)._getIconUrl;
+delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
-
-interface Geofence {
-  id: string;
-  name: string;
-  category: string;
-  coordinates: [number, number][];
-}
 
 // 2. Define the expected shape of our live vehicles
 export interface LiveVehicle {
@@ -27,27 +20,26 @@ export interface LiveVehicle {
   lng: number;
 }
 
-// 3. Add props so the Map can receive the vehicles from page.tsx
+type ClickMode = "none" | "draw-geofence" | "simulate-location";
+
 interface MapProps {
   vehicles: LiveVehicle[];
+  geofences: Geofence[];
+  clickMode: ClickMode;
+  drawPoints: [number, number][];
+  onMapClick: (lat: number, lng: number) => void;
 }
 
-export default function Map({ vehicles }: MapProps) {
-  const [geofences, setGeofences] = useState<Geofence[]>([]);
+function ClickHandler({ onMapClick }: { onMapClick: (lat: number, lng: number) => void }) {
+  useMapEvents({
+    click(e) {
+      onMapClick(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
 
-  useEffect(() => {
-    const fetchGeofences = async () => {
-      try {
-        const response = await fetch("/api/geofences");
-        const data = await response.json();
-        if (data.geofences) setGeofences(data.geofences);
-      } catch (error) {
-        console.error("Failed to fetch geofences:", error);
-      }
-    };
-    fetchGeofences();
-  }, []);
-
+export default function Map({ vehicles, geofences, clickMode, drawPoints, onMapClick }: MapProps) {
   return (
     <MapContainer center={[37.7749, -122.4194]} zoom={13}>
       <TileLayer
@@ -55,12 +47,18 @@ export default function Map({ vehicles }: MapProps) {
         attribution='&copy; OpenStreetMap contributors'
       />
 
-      {/* Render Geofences */}
+      {clickMode !== "none" && <ClickHandler onMapClick={onMapClick} />}
+
+      {/* Render saved Geofences. Non-interactive while drawing/simulating so clicks pass
+          through to the map instead of being swallowed by the polygon's popup. react-leaflet
+          only applies `interactive` at layer construction, not on prop updates, so the mode
+          is baked into the key to force a remount whenever it flips. */}
       {geofences.map((geo) => (
         <Polygon
-          key={geo.id}
+          key={`${geo.id}:${clickMode === "none" ? "interactive" : "passthrough"}`}
           positions={geo.coordinates}
           pathOptions={{ color: "red", fillColor: "red", fillOpacity: 0.3 }}
+          interactive={clickMode === "none"}
         >
           <Popup>
             <div className="font-sans">
@@ -71,9 +69,24 @@ export default function Map({ vehicles }: MapProps) {
         </Polygon>
       ))}
 
-      {/* 4. Render Live Vehicle Markers */}
+      {/* Geofence currently being drawn */}
+      {drawPoints.length > 0 && (
+        <Polygon
+          positions={drawPoints}
+          pathOptions={{ color: "#2563eb", fillColor: "#2563eb", fillOpacity: 0.25, dashArray: "6" }}
+        />
+      )}
+      {drawPoints.map((p, i) => (
+        <Marker key={`draw-${i}`} position={p} />
+      ))}
+
+      {/* Live Vehicle Markers */}
       {vehicles.map((veh) => (
-        <Marker key={veh.id} position={[veh.lat, veh.lng]}>
+        <Marker
+          key={`${veh.id}:${clickMode === "none" ? "interactive" : "passthrough"}`}
+          position={[veh.lat, veh.lng]}
+          interactive={clickMode === "none"}
+        >
           <Popup>
             <div className="font-sans font-bold">
               Vehicle: {veh.number}
